@@ -6,6 +6,7 @@ import json
 import requests
 import os
 import sys
+from urllib.parse import urlsplit
 
     
 
@@ -64,18 +65,30 @@ def _get_fb_access_token() -> str:
 
     return FB_ACCESS_TOKEN
 
+def _redact_token(text: str, token: Optional[str]) -> str:
+    """Strip a secret value out of a string before it's logged or surfaced to a caller."""
+    if token:
+        text = text.replace(token, "***REDACTED***")
+    return text
+
+
 def _make_graph_api_call(url: str, params: Dict[str, Any]) -> Dict:
     """Makes a GET request to the Facebook Graph API and handles the response."""
+    token = params.get('access_token')
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()  # Raises HTTPError for bad responses (4xx or 5xx)
         return response.json()
     except requests.exceptions.RequestException as e:
-        # Log the error and re-raise or handle more gracefully
-        print(f"Error making Graph API call to {url} with params {params}: {e}")
-        # Depending on desired behavior, you might want to raise a custom exception
-        # or return a specific error structure. Re-raising keeps the current behavior.
-        raise
+        # Never log/raise the raw params or exception: both the params dict and
+        # requests' own HTTPError message (which embeds the full request URL,
+        # access_token included, via response.url) can leak the token to local
+        # logs and to whatever surfaces the exception message upstream (e.g. an
+        # MCP client). Redact before doing either.
+        safe_params = {k: ('***REDACTED***' if k == 'access_token' else v) for k, v in params.items()}
+        safe_message = _redact_token(str(e), token)
+        print(f"Error making Graph API call to {url} with params {safe_params}: {safe_message}")
+        raise requests.exceptions.RequestException(safe_message) from None
 
 
 def _prepare_params(base_params: Dict[str, Any], **kwargs) -> Dict[str, Any]:
@@ -826,7 +839,27 @@ def fetch_pagination_url(url: str) -> Dict:
     """
     # This function takes a full URL which already includes the access token,
     # so we don't use the _make_graph_api_call helper here.
-    response = requests.get(url)
+    if any(ord(character) <= 0x20 or ord(character) == 0x7F for character in url):
+        raise ValueError("Pagination URL must not contain spaces or control characters")
+
+    try:
+        parsed_url = urlsplit(url)
+        port = parsed_url.port
+    except ValueError as exc:
+        raise ValueError("Invalid Facebook Graph API pagination URL") from exc
+
+    if (
+        parsed_url.scheme.lower() != "https"
+        or parsed_url.hostname != "graph.facebook.com"
+        or port not in (None, 443)
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+    ):
+        raise ValueError(
+            "Pagination URL must use HTTPS and target graph.facebook.com"
+        )
+
+    response = requests.get(url, allow_redirects=False, timeout=30)
     response.raise_for_status()
     return response.json()
 
@@ -2306,4 +2339,3 @@ def get_activities_by_adset(
 if __name__ == "__main__":
     _get_fb_access_token()
     mcp.run(transport='stdio')
-    
