@@ -4,6 +4,7 @@ import requests
 from typing import Dict, List, Optional, Any
 import json
 import requests
+import os
 import sys
 
     
@@ -22,6 +23,7 @@ DEFAULT_AD_ACCOUNT_FIELDS = [
 mcp = FastMCP("fb-api-mcp-server")
 
 # Add a global variable to store the token
+ACCESS_TOKEN_ENV = "FB_ACCESS_TOKEN"
 FB_ACCESS_TOKEN = None
 
 # --- Helper Functions ---
@@ -39,16 +41,26 @@ def _get_fb_access_token() -> str:
     """
     global FB_ACCESS_TOKEN
     if FB_ACCESS_TOKEN is None:
-        # Look for --fb-token argument
-        if "--fb-token" in sys.argv:
+        # The environment comes first: it is how the remote gateway hands over
+        # the caller's own token, and unlike argv it is not readable by every
+        # other process on the machine.
+        from_env = os.environ.get(ACCESS_TOKEN_ENV, "").strip()
+        if from_env:
+            FB_ACCESS_TOKEN = from_env
+            # stderr, never stdout: stdout carries the MCP protocol.
+            print(f"Using Facebook token from {ACCESS_TOKEN_ENV}", file=sys.stderr)
+        elif "--fb-token" in sys.argv:
             token_index = sys.argv.index("--fb-token") + 1
             if token_index < len(sys.argv):
                 FB_ACCESS_TOKEN = sys.argv[token_index]
-                print(f"Using Facebook token from command line arguments")
+                print("Using Facebook token from command line arguments", file=sys.stderr)
             else:
                 raise Exception("--fb-token argument provided but no token value followed it")
         else:
-            raise Exception("Facebook token must be provided via '--fb-token' command line argument")
+            raise Exception(
+                f"Facebook token must be provided via the {ACCESS_TOKEN_ENV} environment "
+                "variable or the '--fb-token' command line argument"
+            )
 
     return FB_ACCESS_TOKEN
 
